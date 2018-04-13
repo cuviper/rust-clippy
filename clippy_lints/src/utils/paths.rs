@@ -94,6 +94,7 @@ pub const RESULT_OK: [&str; 4] = ["core", "result", "Result", "Ok"];
 pub const SERDE_DE_VISITOR: [&str; 3] = ["serde", "de", "Visitor"];
 pub const SLICE_INTO_VEC: [&str; 4] = ["alloc", "slice", "<impl [T]>", "into_vec"];
 pub const SLICE_ITER: [&str; 3] = ["core", "slice", "Iter"];
+pub const SLICE_ITER_MUT: [&str; 3] = ["core", "slice", "IterMut"];
 pub const STRING: [&str; 3] = ["alloc", "string", "String"];
 pub const TO_OWNED: [&str; 3] = ["alloc", "borrow", "ToOwned"];
 pub const TO_STRING: [&str; 3] = ["alloc", "string", "ToString"];

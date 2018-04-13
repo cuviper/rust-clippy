@@ -673,6 +673,77 @@ declare_clippy_lint! {
     "using `fold` when a more succinct alternative exists"
 }
 
+/// **What it does:** Checks for the use of `.into_iter()` on arrays.
+///
+/// **Why is this bad?** `.iter()` is clearer that this will iterate
+/// references to the items, not values.  In the future, arrays might
+/// gain an implementation of `IntoIterator` by value, which would take
+/// precedence over the current iteration as a slice.
+///
+/// **Known problems:** None.
+///
+/// **Example:**
+/// ```rust
+/// let s = [1,2,3,4,5];
+/// let sum : i32 = s.into_iter().sum();
+/// ```
+/// The better use would be:
+/// ```rust
+/// let s = [1,2,3,4,5];
+/// let sum : i32 = s.iter().sum();
+/// ```
+declare_clippy_lint! {
+    pub ARRAY_INTO_ITER,
+    style,
+    "using `.into_iter()` on an array"
+}
+
+/// **What it does:** Checks for the use of `.into_iter()` on slices.
+///
+/// **Why is this bad?** `.iter()` is clearer that this will iterate
+/// references to the items, not values.
+///
+/// **Known problems:** None.
+///
+/// **Example:**
+/// ```rust
+/// let s = [1,2,3,4,5];
+/// let sum : i32 = s[..].into_iter().sum();
+/// ```
+/// The better use would be:
+/// ```rust
+/// let s = [1,2,3,4,5];
+/// let sum : i32 = s[..].iter().sum();
+/// ```
+declare_clippy_lint! {
+    pub SLICE_INTO_ITER,
+    style,
+    "using `.into_iter()` on a slice"
+}
+
+/// **What it does:** Checks for the use of `.into_iter()` on mutable slices.
+///
+/// **Why is this bad?** `.iter_mut()` is clearer that this will iterate
+/// mutable references to the items, not values.
+///
+/// **Known problems:** None.
+///
+/// **Example:**
+/// ```rust
+/// let s = [1,2,3,4,5];
+/// s[..].into_iter().for_each(|x| *x += 1);
+/// ```
+/// The better use would be:
+/// ```rust
+/// let s = [1,2,3,4,5];
+/// s[..].iter_mut().for_each(|x| *x += 1);
+/// ```
+declare_clippy_lint! {
+    pub SLICE_INTO_ITER_MUT,
+    style,
+    "using `.into_iter()` on a mutable slice"
+}
+
 impl LintPass for Pass {
     fn get_lints(&self) -> LintArray {
         lint_array!(
@@ -705,7 +776,10 @@ impl LintPass for Pass {
             STRING_EXTEND_CHARS,
             ITER_CLONED_COLLECT,
             USELESS_ASREF,
-            UNNECESSARY_FOLD
+            UNNECESSARY_FOLD,
+            ARRAY_INTO_ITER,
+            SLICE_INTO_ITER,
+            SLICE_INTO_ITER_MUT,
         )
     }
 }
@@ -769,6 +843,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
                     lint_asref(cx, expr, "as_mut", arglists[0]);
                 } else if let Some(arglists) = method_chain_args(expr, &["fold"]) {
                     lint_unnecessary_fold(cx, expr, arglists[0]);
+                } else if let Some(arglists) = method_chain_args(expr, &["into_iter"]) {
+                    lint_into_iter(cx, expr, arglists[0]);
                 }
 
                 lint_or_fun_call(cx, expr, *method_span, &method_call.ident.as_str(), args);
@@ -1350,6 +1426,58 @@ fn lint_unnecessary_fold(cx: &LateContext, expr: &hir::Expr, fold_args: &[hir::E
     };
 }
 
+fn lint_into_iter(cx: &LateContext, expr: &hir::Expr, into_iter_args: &[hir::Expr]) {
+    // Check that this is a call to `IntoIterator::into_iter`
+    if !match_trait_method(cx, expr, &paths::INTO_ITERATOR) {
+        return;
+    }
+
+    assert!(
+        into_iter_args.len() == 1,
+        "Expected into_iter_args to have exactly one entry - the receiver"
+    );
+    let receiver = &into_iter_args[0];
+
+    // Check if the return type is a `slice::Iter`
+    if match_type(cx, cx.tables.expr_ty(expr), &paths::SLICE_ITER) {
+        if derefs_to_array(cx, receiver, cx.tables.expr_ty(receiver)).is_some() {
+            span_note_and_lint(
+                cx,
+                ARRAY_INTO_ITER,
+                expr.span,
+                "called `.into_iter()` on an array. Calling `.iter()` better expresses intent",
+                expr.span,
+                "future versions of Rust may shadow this with `IntoIterator` by value",
+            );
+        } else if derefs_to_slice(cx, receiver, cx.tables.expr_ty(receiver)).is_some() {
+            span_lint(
+                cx,
+                SLICE_INTO_ITER,
+                expr.span,
+                "called `.into_iter()` on a slice. Calling `.iter()` better expresses intent",
+            );
+        }
+        return;
+    }
+
+    // Check if the return type is a `slice::IterMut`
+    if match_type(cx, cx.tables.expr_ty(expr), &paths::SLICE_ITER_MUT) {
+        // We don't need to worry specifically about arrays here, because if they were autoref'ed
+        // or unsized to a slice, they would reach `slice::Iter` first.
+
+        if derefs_to_slice(cx, receiver, cx.tables.expr_ty(receiver)).is_some() {
+            span_lint(
+                cx,
+                SLICE_INTO_ITER_MUT,
+                expr.span,
+                "called `.into_iter()` on a mutable slice. \
+                 Calling `.iter_mut()` better expresses intent",
+            );
+        }
+        return;
+    }
+}
+
 fn lint_iter_nth(cx: &LateContext, expr: &hir::Expr, iter_args: &[hir::Expr], is_mut: bool) {
     let mut_str = if is_mut { "_mut" } else { "" };
     let caller_type = if derefs_to_slice(cx, &iter_args[0], cx.tables.expr_ty(&iter_args[0])).is_some() {
@@ -1425,13 +1553,42 @@ fn lint_iter_skip_next(cx: &LateContext, expr: &hir::Expr) {
     }
 }
 
+fn derefs_to_array(cx: &LateContext, expr: &hir::Expr, ty: Ty) -> Option<sugg::Sugg<'static>> {
+    fn may_array(cx: &LateContext, ty: Ty) -> bool {
+        match ty.sty {
+            ty::TyArray(..) => true,
+            ty::TyAdt(def, _) if def.is_box() => may_array(cx, ty.boxed_ty()),
+            ty::TyRef(_, inner, _) => may_array(cx, inner),
+            _ => false,
+        }
+    }
+
+    if let hir::ExprMethodCall(ref path, _, ref args) = expr.node {
+        if path.ident.name == "iter" && may_array(cx, cx.tables.expr_ty(&args[0])) {
+            sugg::Sugg::hir_opt(cx, &args[0]).map(|sugg| sugg.addr())
+        } else {
+            None
+        }
+    } else {
+        match ty.sty {
+            ty::TyArray(..) => sugg::Sugg::hir_opt(cx, expr),
+            ty::TyAdt(def, _) if def.is_box() && may_array(cx, ty.boxed_ty()) => sugg::Sugg::hir_opt(cx, expr),
+            ty::TyRef(_, inner, _) => if may_array(cx, inner) {
+                sugg::Sugg::hir_opt(cx, expr)
+            } else {
+                None
+            },
+            _ => None,
+        }
+    }
+}
+
 fn derefs_to_slice(cx: &LateContext, expr: &hir::Expr, ty: Ty) -> Option<sugg::Sugg<'static>> {
     fn may_slice(cx: &LateContext, ty: Ty) -> bool {
         match ty.sty {
-            ty::TySlice(_) => true,
+            ty::TySlice(_) | ty::TyArray(..) => true,
             ty::TyAdt(def, _) if def.is_box() => may_slice(cx, ty.boxed_ty()),
             ty::TyAdt(..) => match_type(cx, ty, &paths::VEC),
-            ty::TyArray(_, size) => size.assert_usize(cx.tcx).expect("array length") < 32,
             ty::TyRef(_, inner, _) => may_slice(cx, inner),
             _ => false,
         }
@@ -1445,7 +1602,7 @@ fn derefs_to_slice(cx: &LateContext, expr: &hir::Expr, ty: Ty) -> Option<sugg::S
         }
     } else {
         match ty.sty {
-            ty::TySlice(_) => sugg::Sugg::hir_opt(cx, expr),
+            ty::TySlice(_) | ty::TyArray(..) => sugg::Sugg::hir_opt(cx, expr),
             ty::TyAdt(def, _) if def.is_box() && may_slice(cx, ty.boxed_ty()) => sugg::Sugg::hir_opt(cx, expr),
             ty::TyRef(_, inner, _) => if may_slice(cx, inner) {
                 sugg::Sugg::hir_opt(cx, expr)

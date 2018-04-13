@@ -289,8 +289,8 @@ error: it is more idiomatic to loop over containers instead of using explicit it
 error: it is more idiomatic to loop over references to containers instead of using explicit iteration methods
    --> $DIR/for_loop.rs:223:15
     |
-223 |     for _v in array.into_iter() {}
-    |               ^^^^^^^^^^^^^^^^^ help: to write this more concisely, try: `&array`
+223 |     for _v in array.iter() {}
+    |               ^^^^^^^^^^^^ help: to write this more concisely, try: `&array`
 
 error: it is more idiomatic to loop over references to containers instead of using explicit iteration methods
    --> $DIR/for_loop.rs:228:15
